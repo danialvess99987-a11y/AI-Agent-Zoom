@@ -273,18 +273,23 @@ class SubscriptionService:
     # ------------------------------------------------------------------ outbox (yuboriladigan xabarlar)
     OUTBOX_MAX_ATTEMPTS = 5
 
-    def enqueue_message(self, chat_id: int, kind: str, text: str, dedupe_key: Optional[str] = None) -> bool:
-        """Xabarni navbatga qo'yadi. dedupe_key takrorlansa — qo'shilmaydi (False)."""
+    def enqueue_message(self, chat_id: int, kind: str, text: str, dedupe_key: Optional[str] = None,
+                        payload: Optional[dict] = None) -> bool:
+        """Xabarni navbatga qo'yadi. dedupe_key takrorlansa — qo'shilmaydi (False).
+        payload — yuboruvchi uchun qo'shimcha ma'lumot (masalan, tugmalar uchun ID'lar)."""
         if isinstance(chat_id, bool) or not isinstance(chat_id, int) or chat_id == 0:
             raise ValidationError("chat_id noto'g'ri")
         if not isinstance(text, str) or not text.strip():
             raise ValidationError("Xabar matni bo'sh")
         if not isinstance(kind, str) or not kind:
             raise ValidationError("Xabar turi bo'sh")
+        if payload is not None and not isinstance(payload, dict):
+            raise ValidationError("payload lug'at bo'lishi kerak")
         with self._write() as con:
             cur = con.execute(
-                "INSERT OR IGNORE INTO outbox (created_at, chat_id, kind, text, dedupe_key) VALUES (?, ?, ?, ?, ?)",
-                (self.now(), chat_id, kind, text[:4000], dedupe_key),
+                "INSERT OR IGNORE INTO outbox (created_at, chat_id, kind, text, payload, dedupe_key) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (self.now(), chat_id, kind, text[:4000], json.dumps(payload or {}, ensure_ascii=False), dedupe_key),
             )
             return cur.rowcount == 1
 
@@ -292,11 +297,11 @@ class SubscriptionService:
         limit = max(1, min(int(limit), 100))
         with self._read() as con:
             rows = con.execute(
-                "SELECT id, chat_id, kind, text, attempts FROM outbox WHERE sent_at IS NULL AND attempts < ? "
+                "SELECT id, chat_id, kind, text, attempts, payload FROM outbox WHERE sent_at IS NULL AND attempts < ? "
                 "ORDER BY id LIMIT ?", (self.OUTBOX_MAX_ATTEMPTS, limit),
             ).fetchall()
-        return [OutboxMessage(int(r["id"]), int(r["chat_id"]), r["kind"], r["text"], int(r["attempts"]))
-                for r in rows]
+        return [OutboxMessage(int(r["id"]), int(r["chat_id"]), r["kind"], r["text"], int(r["attempts"]),
+                              json.loads(r["payload"] or "{}")) for r in rows]
 
     def mark_outbox_sent(self, message_id: int) -> None:
         with self._write() as con:
@@ -588,6 +593,19 @@ class SubscriptionService:
         with self._write() as con:
             return self._apply(con, telegram_id, Action.ADD_TIME, actor_id, duration=duration,
                                reason=reason, request_id=request_id)
+
+    def preview_add_time(self, telegram_id: int, duration: Duration) -> tuple[str, int]:
+        """add_time natijasini o'zgartirmasdan hisoblaydi: (mode, yangi tugash vaqti yoki muzlatilgan soniyalar)."""
+        now = self.now()
+        with self._read() as con:
+            user = self._require_user(con, telegram_id)
+        status = user.effective_status(now)
+        next_status(status, Action.ADD_TIME)  # ruxsat etilmagan bo'lsa InvalidTransition
+        if status is Status.SUSPENDED:
+            return "suspended_extend", int(user.suspended_remaining or 0) + duration.seconds_from(now)
+        if status is Status.ACTIVE:
+            return "extend", duration.add_to(int(user.sub_expires_at))  # type: ignore[arg-type]
+        return "new", duration.add_to(now)
 
     def _simple(self, action: Action, telegram_id: int, actor_id: int, reason: Optional[str],
                 request_id: Optional[str]) -> ChangeResult:

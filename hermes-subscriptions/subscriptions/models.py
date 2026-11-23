@@ -235,6 +235,7 @@ class OutboxMessage:
     kind: str
     text: str
     attempts: int
+    payload: dict
 
 
 @dataclass(frozen=True)

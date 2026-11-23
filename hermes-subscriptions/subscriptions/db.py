@@ -115,6 +115,7 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
             chat_id     INTEGER NOT NULL,
             kind        TEXT    NOT NULL,
             text        TEXT    NOT NULL,
+            payload     TEXT    NOT NULL DEFAULT '{}',
             dedupe_key  TEXT    UNIQUE,
             sent_at     INTEGER,
             attempts    INTEGER NOT NULL DEFAULT 0,

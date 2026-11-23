@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _STATUS_CHECK = "('PENDING','APPROVED','ACTIVE','EXPIRED','SUSPENDED','REJECTED','BANNED')"
 
@@ -103,6 +103,25 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
             created_at INTEGER NOT NULL
         )
         """,
+    ),
+    2: (
+        # Foydalanuvchiga alohida kunlik limit (NULL — umumiy limit ishlatiladi).
+        "ALTER TABLE users ADD COLUMN daily_limit INTEGER CHECK (daily_limit IS NULL OR daily_limit >= 0)",
+        # Yuborilishi kerak bo'lgan xabarlar navbati (jarayondan tashqaridagi CLI ham shu yerga yozadi).
+        """
+        CREATE TABLE outbox (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at  INTEGER NOT NULL,
+            chat_id     INTEGER NOT NULL,
+            kind        TEXT    NOT NULL,
+            text        TEXT    NOT NULL,
+            dedupe_key  TEXT    UNIQUE,
+            sent_at     INTEGER,
+            attempts    INTEGER NOT NULL DEFAULT 0,
+            last_error  TEXT
+        )
+        """,
+        "CREATE INDEX idx_outbox_unsent ON outbox (sent_at, id)",
     ),
 }
 

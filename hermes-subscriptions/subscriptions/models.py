@@ -178,6 +178,7 @@ class User:
     status_reason: Optional[str]
     approved_by: Optional[int]
     message_count: int
+    daily_limit: Optional[int] = None
 
     @property
     def display_name(self) -> str:
@@ -218,6 +219,22 @@ class ChangeResult:
     mode: Optional[str]          # ADD_TIME uchun: "new" | "extend" | "suspended_extend"
     delta_seconds: Optional[int]
     replayed: bool               # True — shu request_id avval bajarilgan, qayta qo'llanmadi
+
+
+@dataclass(frozen=True)
+class QuotaResult:
+    allowed: bool
+    used: int        # bugun agentga o'tkazilgan xabarlar (shu xabar ham hisobda, agar ruxsat berilgan bo'lsa)
+    limit: int       # 0 — cheklanmagan
+
+
+@dataclass(frozen=True)
+class OutboxMessage:
+    id: int
+    chat_id: int
+    kind: str
+    text: str
+    attempts: int
 
 
 @dataclass(frozen=True)

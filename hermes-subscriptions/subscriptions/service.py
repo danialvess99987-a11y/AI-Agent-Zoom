@@ -26,7 +26,9 @@ from .models import (
     Action,
     ChangeResult,
     InvalidTransition,
+    OutboxMessage,
     PendingAction,
+    QuotaResult,
     PendingActionError,
     PermissionDenied,
     Status,
@@ -58,7 +60,7 @@ _PENDING_KINDS = {
 
 _USER_COLUMNS = (
     "telegram_id, first_name, last_name, username, status, created_at, updated_at, last_seen_at, "
-    "sub_started_at, sub_expires_at, suspended_remaining, status_reason, approved_by, message_count"
+    "sub_started_at, sub_expires_at, suspended_remaining, status_reason, approved_by, message_count, daily_limit"
 )
 _USERNAME_RE = re.compile(r"^@?[A-Za-z][A-Za-z0-9_]{3,31}$")
 
@@ -79,6 +81,7 @@ def _row_to_user(row: sqlite3.Row) -> User:
         status_reason=row["status_reason"],
         approved_by=row["approved_by"],
         message_count=int(row["message_count"]),
+        daily_limit=row["daily_limit"],
     )
 
 
@@ -215,6 +218,95 @@ class SubscriptionService:
         now = self.now()
         with self._write() as con:
             con.execute("UPDATE users SET last_seen_at = ? WHERE telegram_id = ?", (now, telegram_id))
+
+    def consume_message(self, telegram_id: int, default_limit: int) -> QuotaResult:
+        """Kunlik limitni tekshiradi va ruxsat bo'lsa bitta xabarni hisobga oladi (atomik).
+
+        Limit: foydalanuvchining shaxsiy `daily_limit` qiymati, bo'lmasa `default_limit`. 0 — cheklanmagan.
+        Limitdan oshgan xabar hisobga qo'shilmaydi.
+        """
+        if isinstance(default_limit, bool) or not isinstance(default_limit, int) or default_limit < 0:
+            raise ValidationError("Kunlik limit manfiy bo'lmagan butun son bo'lishi kerak")
+        now = self.now()
+        day = local_day(now)
+        with self._write() as con:
+            user = self._require_user(con, telegram_id)
+            limit = user.daily_limit if user.daily_limit is not None else default_limit
+            row = con.execute(
+                "SELECT messages FROM activity_daily WHERE telegram_id = ? AND day = ?", (telegram_id, day)
+            ).fetchone()
+            used = int(row["messages"]) if row else 0
+            if limit and used >= limit:
+                con.execute("UPDATE users SET last_seen_at = ? WHERE telegram_id = ?", (now, telegram_id))
+                return QuotaResult(False, used, limit)
+            con.execute(
+                "UPDATE users SET last_seen_at = ?, message_count = message_count + 1 WHERE telegram_id = ?",
+                (now, telegram_id),
+            )
+            con.execute(
+                "INSERT INTO activity_daily (telegram_id, day, messages) VALUES (?, ?, 1) "
+                "ON CONFLICT (telegram_id, day) DO UPDATE SET messages = messages + 1",
+                (telegram_id, day),
+            )
+            return QuotaResult(True, used + 1, limit)
+
+    def set_daily_limit(self, telegram_id: int, limit: Optional[int], actor_id: int) -> User:
+        """Foydalanuvchiga alohida kunlik limit (None — umumiy limitga qaytarish, 0 — cheklanmagan)."""
+        self._require_admin(actor_id)
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or not 0 <= limit <= 100_000):
+            raise ValidationError("Kunlik limit 0 dan 100000 gacha butun son yoki None bo'lishi kerak")
+        now = self.now()
+        with self._write() as con:
+            user = self._require_user(con, telegram_id)
+            con.execute("UPDATE users SET daily_limit = ?, updated_at = ? WHERE telegram_id = ?",
+                        (limit, now, telegram_id))
+            self._audit(con, now, actor_id, "SET_DAILY_LIMIT", telegram_id,
+                        {"old": user.daily_limit, "new": limit})
+            return self._fetch_user(con, telegram_id)  # type: ignore[return-value]
+
+    def messages_today(self, telegram_id: int) -> int:
+        with self._read() as con:
+            row = con.execute("SELECT messages FROM activity_daily WHERE telegram_id = ? AND day = ?",
+                              (telegram_id, local_day(self.now()))).fetchone()
+        return int(row["messages"]) if row else 0
+
+    # ------------------------------------------------------------------ outbox (yuboriladigan xabarlar)
+    OUTBOX_MAX_ATTEMPTS = 5
+
+    def enqueue_message(self, chat_id: int, kind: str, text: str, dedupe_key: Optional[str] = None) -> bool:
+        """Xabarni navbatga qo'yadi. dedupe_key takrorlansa — qo'shilmaydi (False)."""
+        if isinstance(chat_id, bool) or not isinstance(chat_id, int) or chat_id == 0:
+            raise ValidationError("chat_id noto'g'ri")
+        if not isinstance(text, str) or not text.strip():
+            raise ValidationError("Xabar matni bo'sh")
+        if not isinstance(kind, str) or not kind:
+            raise ValidationError("Xabar turi bo'sh")
+        with self._write() as con:
+            cur = con.execute(
+                "INSERT OR IGNORE INTO outbox (created_at, chat_id, kind, text, dedupe_key) VALUES (?, ?, ?, ?, ?)",
+                (self.now(), chat_id, kind, text[:4000], dedupe_key),
+            )
+            return cur.rowcount == 1
+
+    def fetch_outbox(self, limit: int = 20) -> list[OutboxMessage]:
+        limit = max(1, min(int(limit), 100))
+        with self._read() as con:
+            rows = con.execute(
+                "SELECT id, chat_id, kind, text, attempts FROM outbox WHERE sent_at IS NULL AND attempts < ? "
+                "ORDER BY id LIMIT ?", (self.OUTBOX_MAX_ATTEMPTS, limit),
+            ).fetchall()
+        return [OutboxMessage(int(r["id"]), int(r["chat_id"]), r["kind"], r["text"], int(r["attempts"]))
+                for r in rows]
+
+    def mark_outbox_sent(self, message_id: int) -> None:
+        with self._write() as con:
+            con.execute("UPDATE outbox SET sent_at = ?, attempts = attempts + 1, last_error = NULL WHERE id = ?",
+                        (self.now(), message_id))
+
+    def mark_outbox_failed(self, message_id: int, error: str) -> None:
+        with self._write() as con:
+            con.execute("UPDATE outbox SET attempts = attempts + 1, last_error = ? WHERE id = ?",
+                        (str(error)[:500], message_id))
 
     def check_access(self, telegram_id: Optional[int]) -> AccessDecision:
         """AI agentga xabar o'tkazish mumkinmi? Faqat o'qiydi, tez."""

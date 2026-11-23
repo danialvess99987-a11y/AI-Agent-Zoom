@@ -15,6 +15,7 @@ import re
 from typing import Any, Callable, Optional
 
 from . import texts
+from .jobs import expire_and_notify
 from .models import PendingActionError, PermissionDenied, SubscriptionError
 from .service import SubscriptionService
 from .settings import Settings
@@ -178,18 +179,7 @@ class TelegramUI:
         await self.deliver_outbox()
 
     def process_expiry(self) -> int:
-        expired = self._service.expire_due()
-        for user in expired:
-            key = f"{user.telegram_id}:{user.sub_expires_at}"
-            self._service.enqueue_message(user.telegram_id, "expired", texts.user_expired(), f"expired_user:{key}")
-            self._service.enqueue_message(self._settings.admin_id, "expired_admin", texts.admin_expired(user),
-                                          f"expired_admin:{key}")
-            try:
-                self._revoke_pairing(user.telegram_id)
-            except Exception:
-                logger.exception("subscriptions: pairing'dan chiqarib bo'lmadi")
-        self._service.expire_stale_pending()
-        return len(expired)
+        return len(expire_and_notify(self._service, self._settings.admin_id, self._revoke_pairing))
 
     async def deliver_outbox(self) -> int:
         if self._app is None or getattr(self._app, "bot", None) is None:

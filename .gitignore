@@ -4,3 +4,8 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
+hermes-subscriptions/tests/deploy/home/
+hermes-subscriptions/tests/deploy/bin/
+hermes-subscriptions/tests/deploy/*.log
+hermes-subscriptions/tests/deploy/*.txt
+hermes-subscriptions/tests/deploy/orig*

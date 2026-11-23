@@ -4,8 +4,9 @@ Hermes Agent v0.23.3 (Telegram, bitta bot) uchun foydalanuvchilar, ruxsat va obu
 
 ## Holat
 
-**2-bosqich: Hermes integratsiyasi yozildi va stub'lar bilan sinaldi. Serverga hali o'rnatilmagan.**
-O'rnatish skriptlari, backup va CLI (3-bosqich) tayyor bo'lmaguncha `hermes plugins enable` qilmang.
+**O'rnatishga tayyor (serverdagi qabul testlari hali o'tkazilmagan).** O'rnatish: `deploy/README.md`,
+qabul testlari: `deploy/TEST_PLAN.md`, qaytarish: `deploy/rollback.sh`. Qo'lda `hermes plugins enable` qilmang —
+`deploy/install.sh` ishlating.
 
 ## Arxitektura
 
@@ -50,5 +51,11 @@ cd hermes-subscriptions
 python3 -m pytest -q tests
 ```
 
-123/123 test Python 3.12.3, 3.13.18 va 3.14.6 da o'tdi. Tugmalar qismi haqiqiy python-telegram-bot 22.8 bilan
-(tarmoqsiz) tekshirilgan. Haqiqiy Hermes gateway bilan sinov serverdagi test muhitida (4-bosqich) bajariladi.
+130 ta Python testi (3.12, 3.13, 3.14). Tugmalar qismi haqiqiy python-telegram-bot 22.8 bilan (tarmoqsiz) tekshirilgan.
+O'rnatish/qaytarish skriptlari uchun sinov stendi (soxta hermes/systemctl bilan, 43 tekshiruv):
+
+```bash
+VPY=/path/to/python-with-ptb-pyyaml-pytest bash tests/deploy/run.sh
+```
+
+Haqiqiy Hermes gateway bilan sinov — serverda `deploy/TEST_PLAN.md` bo'yicha.
